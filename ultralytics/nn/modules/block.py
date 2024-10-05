@@ -1,5 +1,6 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 """Block modules."""
+from collections import OrderedDict
 
 import torch
 import torch.nn as nn
@@ -49,6 +50,10 @@ __all__ = (
     "Attention",
     "PSA",
     "SCDown",
+    'ConvNormLayer',
+    'BasicBlock',
+    'BottleNeck',
+    'Blocks'
 )
 
 
@@ -1057,13 +1062,7 @@ class C2fPSA(C2f):
         forward: Performs a forward pass through the C2fPSA module.
         forward_split: Performs a forward pass using split() instead of chunk().
 
-    Examples:
-        >>> import torch
-        >>> from ultralytics.models.common import C2fPSA
-        >>> model = C2fPSA(c1=64, c2=64, n=3, e=0.5)
-        >>> x = torch.randn(1, 64, 128, 128)
-        >>> output = model(x)
-        >>> print(output.shape)
+
     """
 
     def __init__(self, c1, c2, n=1, e=0.5):
@@ -1087,14 +1086,6 @@ class SCDown(nn.Module):
     Methods:
         forward: Applies the SCDown module to the input tensor.
 
-    Examples:
-        >>> import torch
-        >>> from ultralytics import SCDown
-        >>> model = SCDown(c1=64, c2=128, k=3, s=2)
-        >>> x = torch.randn(1, 64, 128, 128)
-        >>> y = model(x)
-        >>> print(y.shape)
-        torch.Size([1, 128, 64, 64])
     """
 
     def __init__(self, c1, c2, k, s):
@@ -1106,3 +1097,198 @@ class SCDown(nn.Module):
     def forward(self, x):
         """Applies convolution and downsampling to the input tensor in the SCDown module."""
         return self.cv2(self.cv1(x))
+
+
+def get_activation(act: str, inpace: bool = True):
+    '''get activation
+    '''
+    act = act.lower()
+
+    if act == 'silu':
+        m = nn.SiLU()
+
+    elif act == 'relu':
+        m = nn.ReLU()
+
+    elif act == 'leaky_relu':
+        m = nn.LeakyReLU()
+
+    elif act == 'silu':
+        m = nn.SiLU()
+
+    elif act == 'gelu':
+        m = nn.GELU()
+
+    elif act is None:
+        m = nn.Identity()
+
+    elif isinstance(act, nn.Module):
+        m = act
+
+    else:
+        raise RuntimeError('')
+
+    if hasattr(m, 'inplace'):
+        m.inplace = inpace
+
+    return m
+class ConvNormLayer(nn.Module):
+    def __init__(self, ch_in, ch_out, kernel_size, stride, padding=None, bias=False, act=None):
+        super().__init__()
+        self.conv = nn.Conv2d(
+            ch_in,
+            ch_out,
+            kernel_size,
+            stride,
+            padding=(kernel_size - 1) // 2 if padding is None else padding,
+            bias=bias)
+        self.norm = nn.BatchNorm2d(ch_out)
+        self.act = nn.Identity() if act is None else get_activation(act)
+
+    def forward(self, x):
+        return self.act(self.norm(self.conv(x)))
+
+    def forward_fuse(self, x):
+        """Perform transposed convolution of 2D data."""
+        return self.act(self.conv(x))
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, ch_in, ch_out, stride, shortcut, act='relu', variant='d'):
+        super().__init__()
+
+        self.shortcut = shortcut
+
+        if not shortcut:
+            if variant == 'd' and stride == 2:
+                self.short = nn.Sequential(OrderedDict([
+                    ('pool', nn.AvgPool2d(2, 2, 0, ceil_mode=True)),
+                    ('conv', ConvNormLayer(ch_in, ch_out, 1, 1))
+                ]))
+            else:
+                self.short = ConvNormLayer(ch_in, ch_out, 1, stride)
+
+        self.branch2a = ConvNormLayer(ch_in, ch_out, 3, stride, act=act)
+        self.branch2b = ConvNormLayer(ch_out, ch_out, 3, 1, act=None)
+        self.act = nn.Identity() if act is None else get_activation(act)
+
+    def forward(self, x):
+        out = self.branch2a(x)
+        out = self.branch2b(out)
+        if self.shortcut:
+            short = x
+        else:
+            short = self.short(x)
+
+        out = out + short
+        out = self.act(out)
+
+        return out
+
+
+class BottleNeck(nn.Module):
+    expansion = 4
+
+    def __init__(self, ch_in, ch_out, stride, shortcut, act='relu', variant='d'):
+        super().__init__()
+
+        if variant == 'a':
+            stride1, stride2 = stride, 1
+        else:
+            stride1, stride2 = 1, stride
+
+        width = ch_out
+
+        self.branch2a = ConvNormLayer(ch_in, width, 1, stride1, act=act)
+        self.branch2b = ConvNormLayer(width, width, 3, stride2, act=act)
+        self.branch2c = ConvNormLayer(width, ch_out * self.expansion, 1, 1)
+
+        self.shortcut = shortcut
+        if not shortcut:
+            if variant == 'd' and stride == 2:
+                self.short = nn.Sequential(OrderedDict([
+                    ('pool', nn.AvgPool2d(2, 2, 0, ceil_mode=True)),
+                    ('conv', ConvNormLayer(ch_in, ch_out * self.expansion, 1, 1))
+                ]))
+            else:
+                self.short = ConvNormLayer(ch_in, ch_out * self.expansion, 1, stride)
+
+        self.act = nn.Identity() if act is None else get_activation(act)
+
+    def forward(self, x):
+        out = self.branch2a(x)
+        out = self.branch2b(out)
+        out = self.branch2c(out)
+
+        if self.shortcut:
+            short = x
+        else:
+            short = self.short(x)
+
+        out = out + short
+        out = self.act(out)
+
+        return out
+
+
+class Blocks(nn.Module):
+    def __init__(self, ch_in, ch_out, block, count, stage_num, act='relu', input_resolution=None, sr_ratio=None,
+                 kernel_size=None, kan_name=None, variant='d'):
+        super().__init__()
+
+        self.blocks = nn.ModuleList()
+        for i in range(count):
+            if input_resolution is not None and sr_ratio is not None:
+                self.blocks.append(
+                    block(
+                        ch_in,
+                        ch_out,
+                        stride=2 if i == 0 and stage_num != 2 else 1,
+                        shortcut=False if i == 0 else True,
+                        variant=variant,
+                        act=act,
+                        input_resolution=input_resolution,
+                        sr_ratio=sr_ratio)
+                )
+            elif kernel_size is not None:
+                self.blocks.append(
+                    block(
+                        ch_in,
+                        ch_out,
+                        stride=2 if i == 0 and stage_num != 2 else 1,
+                        shortcut=False if i == 0 else True,
+                        variant=variant,
+                        act=act,
+                        kernel_size=kernel_size)
+                )
+            elif kan_name is not None:
+                self.blocks.append(
+                    block(
+                        ch_in,
+                        ch_out,
+                        stride=2 if i == 0 and stage_num != 2 else 1,
+                        shortcut=False if i == 0 else True,
+                        variant=variant,
+                        act=act,
+                        kan_name=kan_name)
+                )
+            else:
+                self.blocks.append(
+                    block(
+                        ch_in,
+                        ch_out,
+                        stride=2 if i == 0 and stage_num != 2 else 1,
+                        shortcut=False if i == 0 else True,
+                        variant=variant,
+                        act=act)
+                )
+            if i == 0:
+                ch_in = ch_out * block.expansion
+
+    def forward(self, x):
+        out = x
+        for block in self.blocks:
+            out = block(out)
+        return out

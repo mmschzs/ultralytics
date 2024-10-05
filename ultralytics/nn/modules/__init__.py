@@ -56,6 +56,10 @@ from .block import (
     RepVGGDW,
     ResNetLayer,
     SCDown,
+    ConvNormLayer,
+    BasicBlock,
+    BottleNeck,
+    Blocks,
 )
 from .conv import (
     CBAM,
@@ -156,4 +160,6 @@ __all__ = (
     "C2fCIB",
     "Attention",
     "PSA",
+    "ConvNormLayer",
 )
+

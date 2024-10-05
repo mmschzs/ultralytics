@@ -60,6 +60,11 @@ from ultralytics.nn.modules import (
     Segment,
     WorldDetect,
     v10Detect,
+    ConvNormLayer,
+    BasicBlock,
+    BottleNeck,
+    Blocks,
+
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -213,6 +218,12 @@ class BaseModel(nn.Module):
                 if isinstance(m, RepConv):
                     m.fuse_convs()
                     m.forward = m.forward_fuse  # update forward
+                if isinstance(m, ConvNormLayer):
+                    m.conv = fuse_conv_and_bn(m.conv, m.norm)  # update conv
+                    delattr(m, 'norm')  # remove batchnorm
+                    m.forward = m.forward_fuse  # update forward
+                if hasattr(m, 'switch_to_deploy'):
+                    m.switch_to_deploy()
                 if isinstance(m, RepVGGDW):
                     m.fuse()
                     m.forward = m.forward_fuse
@@ -996,7 +1007,10 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             PSA,
             SCDown,
             C2fCIB,
+            ConvNormLayer,
         }:
+            if args[0] == 'head_channel':
+                args[0] = d[args[0]]
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
@@ -1053,6 +1067,10 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             args = [c1, c2, *args[1:]]
         elif m is CBFuse:
             c2 = ch[f[-1]]
+        elif m is Blocks:
+            block_type = globals()[args[1]]
+            c1, c2 = ch[f], args[0] * block_type.expansion
+            args = [c1, args[0], block_type, *args[2:]]
         else:
             c2 = ch[f]
 
