@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, ChannelAttention
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -1303,36 +1303,31 @@ class Add(nn.Module):
     def forward(self, x):
         return torch.sum(torch.stack(x, dim=0), dim=0)
 # ATFAM
-class ATFAM(nn.Module):
-    def __init__(self,ds_c):
-        super().__init__()
-        self.dysample = DySample(ds_c, 2, 'lp')
-
-    def forward(self, x):
-        l, m, s = x[0], x[1], x[2]
-        tgt_size = m.shape[2:]
-        l = F.adaptive_max_pool2d(l, tgt_size) + F.adaptive_avg_pool2d(l, tgt_size)
-        s = self.dysample(s)
-        lms = torch.cat([l, m, s], dim=1)
-        return lms
-class ATFAMv2(nn.Module):#
+class ATFAM(nn.Module):#
     def __init__(self, c1, c2):
         super().__init__()
         self.conv=nn.Conv2d(c1[1],c1[1],1)
+        self.upsample = nn.UpsamplingBilinear2d(scale_factor=2)
     def forward(self, x):
         feat1, feat2, feat3 = x[0], x[1], x[2]
         tgt_size = feat2.shape[2:]
         feat1 = F.adaptive_max_pool2d(feat1, tgt_size) + F.adaptive_avg_pool2d(feat1, tgt_size)
-        feat3 = F.interpolate(feat3, feat2.shape[2:], mode='nearest')
-        feat2=self.conv(feat2)
+        feat2 = self.conv(feat2)
+        # feat3=self.upsample(feat3)
+        feat3=F.interpolate(feat3, size=tgt_size, mode='bicubic', align_corners=True)
         x = torch.cat([feat1, feat2, feat3], dim=1)
+        return x
+class ATFAMv2(nn.Module):#
+    def __init__(self, c1, c2):
+        super().__init__()
+    def forward(self, x):
         return x
 # DSASF
 class DSASF(nn.Module):
     def __init__(self, c1, c2):
         super(DSASF, self).__init__()
-        # if c2 != c1[0]:
-        #     self.conv0 = Conv(c1[0], c2, 1)
+        if c2 != c1[0]:
+            self.conv0 = Conv(c1[0], c2, 1)
         self.conv1 = Conv(c1[1], c2, 1)
         self.conv2 = Conv(c1[2], c2, 1)
         self.conv3d = nn.Conv3d(c2, c2, kernel_size=(1, 1, 1))
@@ -1343,9 +1338,9 @@ class DSASF(nn.Module):
         self.dysample2 = DySample(c2, 4, 'lp')
 
     def forward(self, x):
-        feat1, feat2, feat3 = x[0], x[1], x[2]  # 将feat2，feat3采样，缩放到feat1的尺寸，再融合；
-        # if hasattr(self, 'conv0'):
-        #     feat1 = self.conv0(feat1)
+        feat1, feat2, feat3 = x[0], x[1], x[2]
+        if hasattr(self, 'conv0'):
+            feat1 = self.conv0(feat1)
         feat2_2 = self.conv1(feat2)
         feat2_2 = self.dysample1(feat2_2)
         feat3_2 = self.conv2(feat3)
@@ -1357,6 +1352,21 @@ class DSASF(nn.Module):
         conv_3d = self.conv3d(mix)
         x = self.pool_3d(self.act(self.bn(conv_3d)))
         x = torch.squeeze(x, 2)
+        return x
+class DSASFv2(nn.Module):
+    def __init__(self, c1, c2):
+        super(DSASFv2, self).__init__()
+        self.AFGCAttention = AFGCAttention(c2)
+        self.dysample1 = DySample(c1[1], 2, 'lp')
+        self.dysample2 = DySample(c1[2], 4, 'lp')
+        self.conv_fusion = nn.Conv2d(c1[0]+c1[1]+c1[2], c2, 1)
+    def forward(self, x):
+        feat1, feat2, feat3 = x[0], x[1], x[2]
+        feat2 = self.dysample1(feat2)
+        feat3 = self.dysample2(feat3)
+        x = torch.cat([feat1, feat2, feat3], dim=1)
+        x=self.conv_fusion(x)
+        x = self.AFGCAttention(x)
         return x
 # ARG
 class ARG(nn.Module):
