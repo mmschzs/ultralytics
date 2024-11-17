@@ -66,6 +66,7 @@ from ultralytics.nn.modules import (
     Blocks,
 
 )
+from ultralytics.nn.modules.block import ARG, DSASF, ATFAM, Add
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import (
@@ -1071,6 +1072,25 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             block_type = globals()[args[1]]
             c1, c2 = ch[f], args[0] * block_type.expansion
             args = [c1, args[0], block_type, *args[2:]]
+        elif m in {DSASF}:
+            c1 = [ch[x] for x in f]
+            c2 = make_divisible(args[0] * width, 8)
+            args = [c1, c2]
+        elif m is ATFAM:
+            c2 = sum(ch[x] for x in f)
+            ds_c=ch[f[2]]
+            args=[ds_c]
+        elif m in {ARG}:
+            c1 = ch[f[0]]
+            c2 = args[0]
+            cx = ch[f[0]]
+            cHpre = ch[f[1]]
+            # control the scale
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels) * width, 8)
+            args = [c1, c2, cx, cHpre, *args[1:]]
+        elif m is Add:
+            c2 = ch[f[-1]]
         else:
             c2 = ch[f]
 
