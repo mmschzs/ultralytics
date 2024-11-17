@@ -66,7 +66,7 @@ from ultralytics.nn.modules import (
     Blocks,
 
 )
-from ultralytics.nn.modules.block import ARG, DSASF, ATFAM, Add
+from ultralytics.nn.modules.block import ARG, DSASF, ATFAM, Add, ATFAMv2
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import (
@@ -1076,10 +1076,14 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             c1 = [ch[x] for x in f]
             c2 = make_divisible(args[0] * width, 8)
             args = [c1, c2]
-        elif m is ATFAM:
+        elif m in{ATFAM}:
             c2 = sum(ch[x] for x in f)
             ds_c=ch[f[2]]
             args=[ds_c]
+        elif m is ATFAMv2:
+            c2 = sum(ch[x] for x in f)
+            c1 = [ch[x] for x in f]
+            args = [c1, c2, *args[1:]]
         elif m in {ARG}:
             c1 = ch[f[0]]
             c2 = args[0]

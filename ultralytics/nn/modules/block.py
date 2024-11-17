@@ -1315,25 +1315,37 @@ class ATFAM(nn.Module):
         s = self.dysample(s)
         lms = torch.cat([l, m, s], dim=1)
         return lms
+class ATFAMv2(nn.Module):#
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.conv=nn.Conv2d(c1[1],c1[1],1)
+    def forward(self, x):
+        feat1, feat2, feat3 = x[0], x[1], x[2]
+        tgt_size = feat2.shape[2:]
+        feat1 = F.adaptive_max_pool2d(feat1, tgt_size) + F.adaptive_avg_pool2d(feat1, tgt_size)
+        feat3 = F.interpolate(feat3, feat2.shape[2:], mode='nearest')
+        feat2=self.conv(feat2)
+        x = torch.cat([feat1, feat2, feat3], dim=1)
+        return x
 # DSASF
 class DSASF(nn.Module):
-    def __init__(self, inc, channel):
+    def __init__(self, c1, c2):
         super(DSASF, self).__init__()
-        if channel != inc[0]:
-            self.conv0 = Conv(inc[0], channel, 1)
-        self.conv1 = Conv(inc[1], channel, 1)
-        self.conv2 = Conv(inc[2], channel, 1)
-        self.conv3d = nn.Conv3d(channel, channel, kernel_size=(1, 1, 1))
-        self.bn = nn.BatchNorm3d(channel)
+        # if c2 != c1[0]:
+        #     self.conv0 = Conv(c1[0], c2, 1)
+        self.conv1 = Conv(c1[1], c2, 1)
+        self.conv2 = Conv(c1[2], c2, 1)
+        self.conv3d = nn.Conv3d(c2, c2, kernel_size=(1, 1, 1))
+        self.bn = nn.BatchNorm3d(c2)
         self.act = nn.LeakyReLU(0.1)
         self.pool_3d = nn.MaxPool3d(kernel_size=(3, 1, 1))
-        self.dysample1 = DySample(channel, 2, 'lp')
-        self.dysample2 = DySample(channel, 4, 'lp')
+        self.dysample1 = DySample(c2, 2, 'lp')
+        self.dysample2 = DySample(c2, 4, 'lp')
 
     def forward(self, x):
         feat1, feat2, feat3 = x[0], x[1], x[2]  # 将feat2，feat3采样，缩放到feat1的尺寸，再融合；
-        if hasattr(self, 'conv0'):
-            feat1 = self.conv0(feat1)
+        # if hasattr(self, 'conv0'):
+        #     feat1 = self.conv0(feat1)
         feat2_2 = self.conv1(feat2)
         feat2_2 = self.dysample1(feat2_2)
         feat3_2 = self.conv2(feat3)
