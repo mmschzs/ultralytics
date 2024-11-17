@@ -1,5 +1,6 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 """Block modules."""
+import math
 from collections import OrderedDict
 
 import torch
@@ -53,7 +54,10 @@ __all__ = (
     'ConvNormLayer',
     'BasicBlock',
     'BottleNeck',
-    'Blocks'
+    'Blocks',
+    'ATFAM',
+    'ARG',
+    'DSASF',
 )
 
 
@@ -1292,3 +1296,200 @@ class Blocks(nn.Module):
         for block in self.blocks:
             out = block(out)
         return out
+class Add(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return torch.sum(torch.stack(x, dim=0), dim=0)
+# ATFAM
+class ATFAM(nn.Module):
+    def __init__(self,ds_c):
+        super().__init__()
+        self.dysample = DySample(ds_c, 2, 'lp')
+
+    def forward(self, x):
+        l, m, s = x[0], x[1], x[2]
+        tgt_size = m.shape[2:]
+        l = F.adaptive_max_pool2d(l, tgt_size) + F.adaptive_avg_pool2d(l, tgt_size)
+        s = self.dysample(s)
+        lms = torch.cat([l, m, s], dim=1)
+        return lms
+# DSASF
+class DSASF(nn.Module):
+    def __init__(self, inc, channel):
+        super(DSASF, self).__init__()
+        if channel != inc[0]:
+            self.conv0 = Conv(inc[0], channel, 1)
+        self.conv1 = Conv(inc[1], channel, 1)
+        self.conv2 = Conv(inc[2], channel, 1)
+        self.conv3d = nn.Conv3d(channel, channel, kernel_size=(1, 1, 1))
+        self.bn = nn.BatchNorm3d(channel)
+        self.act = nn.LeakyReLU(0.1)
+        self.pool_3d = nn.MaxPool3d(kernel_size=(3, 1, 1))
+        self.dysample1 = DySample(channel, 2, 'lp')
+        self.dysample2 = DySample(channel, 4, 'lp')
+
+    def forward(self, x):
+        feat1, feat2, feat3 = x[0], x[1], x[2]  # 将feat2，feat3采样，缩放到feat1的尺寸，再融合；
+        if hasattr(self, 'conv0'):
+            feat1 = self.conv0(feat1)
+        feat2_2 = self.conv1(feat2)
+        feat2_2 = self.dysample1(feat2_2)
+        feat3_2 = self.conv2(feat3)
+        feat3_2 = self.dysample2(feat3_2)
+        feat1_3d = torch.unsqueeze(feat1, -3)
+        feat2_3d = torch.unsqueeze(feat2_2, -3)
+        feat3_3d = torch.unsqueeze(feat3_2, -3)
+        mix = torch.cat([feat1_3d, feat2_3d, feat3_3d], dim=2)
+        conv_3d = self.conv3d(mix)
+        x = self.pool_3d(self.act(self.bn(conv_3d)))
+        x = torch.squeeze(x, 2)
+        return x
+# ARG
+class ARG(nn.Module):
+    def __init__(self, c1, c2,cx,cHpre):
+        super().__init__()
+        # assert c1==c2
+        dim=c2
+        self.update_gate = nn.Sequential(
+            nn.Conv2d(cx+cHpre, dim, 1),
+            DWConv(dim,dim,k=3,act=True),
+            DWConv(dim,dim,k=3,act=True)
+        )
+        self.reset_gate = nn.Sequential(
+            nn.Conv2d(cx+cHpre, dim, 1),
+            AFGCAttention(dim)
+        )
+        self.add_conv = nn.Sequential(
+            nn.Conv2d(cx+cHpre, dim, 1)
+        )
+
+    def forward(self, data):
+        x, y = data
+        ini = torch.cat([x, y], dim=1)
+        mix = self.add_conv(ini)
+        z1 = self.update_gate(ini)
+        Hbar = mix + self.reset_gate(ini)
+        output = mix * z1 + (1 - z1) * Hbar
+        return output
+
+
+class DySample(nn.Module):
+    def __init__(self, in_channels, scale=2, style='lp', groups=4, dyscope=False):
+        super().__init__()
+        self.scale = scale
+        self.style = style
+        self.groups = groups
+        assert style in ['lp', 'pl']
+        if style == 'pl':
+            assert in_channels >= scale ** 2 and in_channels % scale ** 2 == 0
+        assert in_channels >= groups and in_channels % groups == 0
+
+        if style == 'pl':
+            in_channels = in_channels // scale ** 2
+            out_channels = 2 * groups
+        else:
+            out_channels = 2 * groups * scale ** 2
+
+        self.offset = nn.Conv2d(in_channels, out_channels, 1)
+        self.normal_init(self.offset, std=0.001)
+        if dyscope:
+            self.scope = nn.Conv2d(in_channels, out_channels, 1)
+            self.constant_init(self.scope, val=0.)
+
+        self.register_buffer('init_pos', self._init_pos())
+
+    def normal_init(self, module, mean=0, std=1, bias=0):
+        if hasattr(module, 'weight') and module.weight is not None:
+            nn.init.normal_(module.weight, mean, std)
+        if hasattr(module, 'bias') and module.bias is not None:
+            nn.init.constant_(module.bias, bias)
+
+    def constant_init(self, module, val, bias=0):
+        if hasattr(module, 'weight') and module.weight is not None:
+            nn.init.constant_(module.weight, val)
+        if hasattr(module, 'bias') and module.bias is not None:
+            nn.init.constant_(module.bias, bias)
+
+    def _init_pos(self):
+        h = torch.arange((-self.scale + 1) / 2, (self.scale - 1) / 2 + 1) / self.scale
+        return torch.stack(torch.meshgrid([h, h])).transpose(1, 2).repeat(1, self.groups, 1).reshape(1, -1, 1, 1)
+
+    def sample(self, x, offset):
+        B, _, H, W = offset.shape
+        offset = offset.view(B, 2, -1, H, W)
+        coords_h = torch.arange(H) + 0.5
+        coords_w = torch.arange(W) + 0.5
+        coords = torch.stack(torch.meshgrid([coords_w, coords_h])
+                             ).transpose(1, 2).unsqueeze(1).unsqueeze(0).type(x.dtype).to(x.device)
+        normalizer = torch.tensor([W, H], dtype=x.dtype, device=x.device).view(1, 2, 1, 1, 1)
+        coords = 2 * (coords + offset) / normalizer - 1
+        coords = F.pixel_shuffle(coords.view(B, -1, H, W), self.scale).view(
+            B, 2, -1, self.scale * H, self.scale * W).permute(0, 2, 3, 4, 1).contiguous().flatten(0, 1)
+        return F.grid_sample(x.reshape(B * self.groups, -1, H, W), coords, mode='bilinear',
+                             align_corners=False, padding_mode="border").view(B, -1, self.scale * H, self.scale * W)
+
+    def forward_lp(self, x):
+        if hasattr(self, 'scope'):
+            offset = self.offset(x) * self.scope(x).sigmoid() * 0.5 + self.init_pos
+        else:
+            offset = self.offset(x) * 0.25 + self.init_pos
+        return self.sample(x, offset)
+
+    def forward_pl(self, x):
+        x_ = F.pixel_shuffle(x, self.scale)
+        if hasattr(self, 'scope'):
+            offset = F.pixel_unshuffle(self.offset(x_) * self.scope(x_).sigmoid(), self.scale) * 0.5 + self.init_pos
+        else:
+            offset = F.pixel_unshuffle(self.offset(x_), self.scale) * 0.25 + self.init_pos
+        return self.sample(x, offset)
+
+    def forward(self, x):
+        if self.style == 'pl':
+            return self.forward_pl(x)
+        return self.forward_lp(x)
+
+class Mix(nn.Module):
+    def __init__(self, m=-0.80):
+        super(Mix, self).__init__()
+        w = torch.nn.Parameter(torch.FloatTensor([m]), requires_grad=True)
+        w = torch.nn.Parameter(w, requires_grad=True)
+        self.w = w
+        self.mix_block = nn.Sigmoid()
+
+    def forward(self, fea1, fea2):
+        mix_factor = self.mix_block(self.w)
+        out = fea1 * mix_factor.expand_as(fea1) + fea2 * (1 - mix_factor.expand_as(fea2))
+        return out
+class AFGCAttention(nn.Module):
+    # https://www.sciencedirect.com/science/article/abs/pii/S0893608024002387
+    # https://github.com/Lose-Code/UBRFC-Net
+    # Adaptive Fine-Grained Channel Attention
+    def __init__(self, channel, b=1, gamma=2):
+        super(AFGCAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)#全局平均池化
+        #一维卷积
+        t = int(abs((math.log(channel, 2) + b) / gamma))
+        k = t if t % 2 else t + 1
+        self.conv1 = nn.Conv1d(1, 1, kernel_size=k, padding=int(k / 2), bias=False)
+        self.fc = nn.Conv2d(channel, channel, 1, padding=0, bias=True)
+        self.sigmoid = nn.Sigmoid()
+        self.mix = Mix()
+
+    def forward(self, input):
+        x = self.avg_pool(input)
+        x1 = self.conv1(x.squeeze(-1).transpose(-1, -2)).transpose(-1, -2)#(1,64,1)
+        x2 = self.fc(x).squeeze(-1).transpose(-1, -2)#(1,1,64)
+        out1 = torch.sum(torch.matmul(x1,x2),dim=1).unsqueeze(-1).unsqueeze(-1)#(1,64,1,1)
+        #x1 = x1.transpose(-1, -2).unsqueeze(-1)
+        out1 = self.sigmoid(out1)
+        out2 = torch.sum(torch.matmul(x2.transpose(-1, -2),x1.transpose(-1, -2)),dim=1).unsqueeze(-1).unsqueeze(-1)
+
+        #out2 = self.fc(x)
+        out2 = self.sigmoid(out2)
+        out = self.mix(out1,out2)
+        out = self.conv1(out.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
+        out = self.sigmoid(out)
+
+        return input*out
