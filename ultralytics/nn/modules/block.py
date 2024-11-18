@@ -1307,7 +1307,7 @@ class ATFAM(nn.Module):#
     def __init__(self, c1, c2):
         super().__init__()
         self.conv=nn.Conv2d(c1[1],c1[1],1)
-        self.upsample = nn.UpsamplingBilinear2d(scale_factor=2)
+        # self.upsample = nn.UpsamplingBilinear2d(scale_factor=2)
     def forward(self, x):
         feat1, feat2, feat3 = x[0], x[1], x[2]
         tgt_size = feat2.shape[2:]
@@ -1317,45 +1317,11 @@ class ATFAM(nn.Module):#
         feat3=F.interpolate(feat3, size=tgt_size, mode='bicubic', align_corners=True)
         x = torch.cat([feat1, feat2, feat3], dim=1)
         return x
-class ATFAMv2(nn.Module):#
-    def __init__(self, c1, c2):
-        super().__init__()
-    def forward(self, x):
-        return x
+
 # DSASF
 class DSASF(nn.Module):
     def __init__(self, c1, c2):
         super(DSASF, self).__init__()
-        if c2 != c1[0]:
-            self.conv0 = Conv(c1[0], c2, 1)
-        self.conv1 = Conv(c1[1], c2, 1)
-        self.conv2 = Conv(c1[2], c2, 1)
-        self.conv3d = nn.Conv3d(c2, c2, kernel_size=(1, 1, 1))
-        self.bn = nn.BatchNorm3d(c2)
-        self.act = nn.LeakyReLU(0.1)
-        self.pool_3d = nn.MaxPool3d(kernel_size=(3, 1, 1))
-        self.dysample1 = DySample(c2, 2, 'lp')
-        self.dysample2 = DySample(c2, 4, 'lp')
-
-    def forward(self, x):
-        feat1, feat2, feat3 = x[0], x[1], x[2]
-        if hasattr(self, 'conv0'):
-            feat1 = self.conv0(feat1)
-        feat2_2 = self.conv1(feat2)
-        feat2_2 = self.dysample1(feat2_2)
-        feat3_2 = self.conv2(feat3)
-        feat3_2 = self.dysample2(feat3_2)
-        feat1_3d = torch.unsqueeze(feat1, -3)
-        feat2_3d = torch.unsqueeze(feat2_2, -3)
-        feat3_3d = torch.unsqueeze(feat3_2, -3)
-        mix = torch.cat([feat1_3d, feat2_3d, feat3_3d], dim=2)
-        conv_3d = self.conv3d(mix)
-        x = self.pool_3d(self.act(self.bn(conv_3d)))
-        x = torch.squeeze(x, 2)
-        return x
-class DSASFv2(nn.Module):
-    def __init__(self, c1, c2):
-        super(DSASFv2, self).__init__()
         self.AFGCAttention = AFGCAttention(c2)
         self.dysample1 = DySample(c1[1], 2, 'lp')
         self.dysample2 = DySample(c1[2], 4, 'lp')

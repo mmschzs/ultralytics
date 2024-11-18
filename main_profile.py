@@ -6,7 +6,7 @@ from ultralytics import RTDETR
 from ultralytics import YOLO
 
 if __name__ == '__main__':
-    model = YOLO("ultralytics/cfg/models/11/yolo11-ours.yaml")
+    model = YOLO("ultralytics/cfg/models/11/yolo11l-ours.yaml")
 
     model.model.eval()
     model.info(detailed=True)
