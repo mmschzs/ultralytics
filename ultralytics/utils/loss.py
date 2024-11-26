@@ -91,16 +91,24 @@ class DFLoss(nn.Module):
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses during training."""
 
-    def __init__(self, reg_max=16):
+    def __init__(self, reg_max=16, use_dfl=False, nwd_loss=False, iou_ratio=0.5):
         """Initialize the BboxLoss module with regularization maximum and DFL settings."""
         super().__init__()
         self.dfl_loss = DFLoss(reg_max) if reg_max > 1 else None
-
+        self.use_dfl = use_dfl
+        self.iou_ratio = iou_ratio
+        self.nwd_loss = nwd_loss
     def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask):
         """IoU loss."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
         iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+
+        #NWDLoss
+        if self.nwd_loss:
+            nwd = wasserstein_loss(pred_bboxes[fg_mask], target_bboxes[fg_mask])
+            nwd_loss = ((1.0 - nwd) * weight).sum() / target_scores_sum
+            loss_iou = self.iou_ratio * loss_iou + (1 - self.iou_ratio) * nwd_loss
 
         # DFL loss
         if self.dfl_loss:
@@ -173,8 +181,13 @@ class v8DetectionLoss:
 
         self.use_dfl = m.reg_max > 1
 
+        # NWDLoss
+        self.nwdloss = self.hyp.nwdloss
+        self.iou_ratio = self.hyp.iou_ratio
+
         self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
-        self.bbox_loss = BboxLoss(m.reg_max).to(device)
+        self.bbox_loss = BboxLoss(m.reg_max, use_dfl=self.use_dfl, nwd_loss=self.nwdloss,
+                                  iou_ratio=self.iou_ratio).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 
     def preprocess(self, targets, batch_size, scale_tensor):
@@ -743,3 +756,44 @@ class E2EDetectLoss:
         one2one = preds["one2one"]
         loss_one2one = self.one2one(one2one, batch)
         return loss_one2many[0] + loss_one2one[0], loss_one2many[1] + loss_one2one[1]
+
+
+import torch
+import torch.nn as nn
+
+
+def wasserstein_loss(pred, target, eps=1e-7, constant=12.8):
+    r"""Implementation of paper `Enhancing Geometric Factors into
+    Model Learning and Inference for Object Detection and Instance
+    Segmentation <https://arxiv.org/abs/2005.03572>`_.
+    Code is modified from https://github.com/Zzh-tju/CIoU.
+    Args:
+        pred (Tensor): Predicted bboxes of format (x_min, y_min, x_max, y_max),
+            shape (n, 4).
+        target (Tensor): Corresponding gt bboxes, shape (n, 4).
+        eps (float): Eps to avoid log(0).
+    Return:
+        Tensor: Loss tensor.
+    """
+
+    # 拆分坐标
+    b1_x1, b1_y1, b1_x2, b1_y2 = pred.split(1, dim=-1)
+    b2_x1, b2_y1, b2_x2, b2_y2 = target.split(1, dim=-1)
+
+    # 计算框的宽度和高度
+    w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1 + eps
+    w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1 + eps
+
+    # 计算框的中心坐标
+    b1_x_center, b1_y_center = (b1_x1 + b1_x2) / 2, (b1_y1 + b1_y2) / 2
+    b2_x_center, b2_y_center = (b2_x1 + b2_x2) / 2, (b2_y1 + b2_y2) / 2
+
+    # 计算中心距离和宽高距离
+    center_distance = (b1_x_center - b2_x_center).pow(2) + (b1_y_center - b2_y_center).pow(2) + eps
+    wh_distance = ((w1 - w2).pow(2) + (h1 - h2).pow(2)) / 4
+
+    # Wasserstein 距离
+    wasserstein_2 = center_distance + wh_distance
+
+    # 返回损失
+    return torch.exp(-torch.sqrt(wasserstein_2) / constant)
