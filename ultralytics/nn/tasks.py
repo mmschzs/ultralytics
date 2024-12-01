@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from ultralytics.nn.extra_modules.CTrans import ChannelTransformer, GetIndexOutput
 from ultralytics.nn.modules import (
     AIFI,
     C1,
@@ -1091,6 +1092,14 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             args = [c1, c2, cx, cHpre, *args[1:]]
         elif m is Add:
             c2 = ch[f[-1]]
+
+
+        elif m in {ChannelTransformer}:
+            c1 = [ch[x] for x in f]
+            c2 = c1
+            args = [c1]
+        elif m in {GetIndexOutput}:
+            c2 = ch[f][args[0]]
         else:
             c2 = ch[f]
 
