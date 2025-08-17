@@ -1302,6 +1302,9 @@ class Add(nn.Module):
 
     def forward(self, x):
         return torch.sum(torch.stack(x, dim=0), dim=0)
+
+# C3k2_PureLEGM
+
 # ATFAM
 class ATFAM(nn.Module):#
     def __init__(self, c1, c2):

@@ -4,12 +4,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ultralytics.utils.metrics import OKS_SIGMA
+from ultralytics.utils.metrics import OKS_SIGMA, probiou
 from ultralytics.utils.ops import crop_mask, xywh2xyxy, xyxy2xywh
 from ultralytics.utils.tal import RotatedTaskAlignedAssigner, TaskAlignedAssigner, dist2bbox, dist2rbox, make_anchors
 from ultralytics.utils.torch_utils import autocast
 
-from .metrics import bbox_iou, probiou
+from .metrics import bbox_iou,bbox_iou_wise, bbox_inner_iou, bbox_focaler_iou, bbox_mpdiou, bbox_inner_mpdiou, bbox_focaler_mpdiou, bbox_iou, bbox_mpdiou, bbox_inner_mpdiou, wasserstein_loss
 from .tal import bbox2dist
 
 
@@ -91,18 +91,45 @@ class DFLoss(nn.Module):
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses during training."""
 
-    def __init__(self, reg_max=16, use_dfl=False, nwd_loss=False, iou_ratio=0.5):
+    def __init__(self, reg_max=16, use_dfl=False, nwd_loss=False, iou_ratio=0.5,alter_iou=None):
         """Initialize the BboxLoss module with regularization maximum and DFL settings."""
         super().__init__()
         self.dfl_loss = DFLoss(reg_max) if reg_max > 1 else None
         self.use_dfl = use_dfl
         self.iou_ratio = iou_ratio
         self.nwd_loss = nwd_loss
+
+        self.alter_iou = alter_iou
     def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask):
         """IoU loss."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
-        loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        if self.alter_iou=="wiou_loss":
+            iou = bbox_iou_wise(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, WIoU=True, scale=True)
+            if type(iou) is tuple:
+                if len(iou) == 2:
+                    loss_iou = ((1.0 - iou[0]) * iou[1].detach() * weight).sum() / target_scores_sum
+                else:
+                    loss_iou = (iou[0] * iou[1] * weight).sum() / target_scores_sum
+            else:
+                loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        if self.alter_iou == "default":
+            iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)#default
+            loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        if self.alter_iou == "bbox_inner_iou":
+            iou = bbox_inner_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=True, GIoU=True, ratio=0.7) # Inner IoU
+            loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        if self.alter_iou == "bbox_focaler_iou":
+            iou = bbox_focaler_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=True, GIoU=True, d=0.0, u=0.95) # Focaler IoU
+            loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        if self.alter_iou == "bbox_mpdiou":
+            iou = bbox_mpdiou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=True, mpdiou_hw=2) # MPDIoU
+            loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        if self.alter_iou == "bbox_inner_mpdiou":
+            iou = bbox_inner_mpdiou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=True, mpdiou_hw=2, ratio=0.7) # Inner-MPDIoU
+            loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        if self.alter_iou == "bbox_focaler_mpdiou":
+            iou = bbox_focaler_mpdiou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=True, mpdiou_hw=2, d=0.0, u=0.95) # Focaler-MPDIoU
+            loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         #NWDLoss
         if self.nwd_loss:
@@ -185,9 +212,11 @@ class v8DetectionLoss:
         self.nwdloss = self.hyp.nwdloss
         self.iou_ratio = self.hyp.iou_ratio
 
+        self.alter_iou=self.hyp.alter_iou
+
         self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
         self.bbox_loss = BboxLoss(m.reg_max, use_dfl=self.use_dfl, nwd_loss=self.nwdloss,
-                                  iou_ratio=self.iou_ratio).to(device)
+                                  iou_ratio=self.iou_ratio,alter_iou=self.alter_iou).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 
     def preprocess(self, targets, batch_size, scale_tensor):

@@ -122,7 +122,7 @@ crop_fraction: 1.0 # (float) image crop fraction for classification (0.1-1), 1.0
 
 nwdloss: False #用于指定是否启用 NWDLoss，默认值为 False，表示不使用 NWDLoss
 iou_ratio: 0.5 #用于指定 NWDLoss 和 IoU 损失的权重比，默认值为 0.5，表示 NWDLoss 和 IoU 损失各占 50%
-
+alter_iou: default #用于指定 IoU 损失的计算方式，默认值为 default，表示使用默认的计算方式
 # Custom config.yaml ---------------------------------------------------------------------------------------------------
 cfg: # (str, optional) for overriding defaults.yaml
 

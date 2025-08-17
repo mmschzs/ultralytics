@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-
+from ultralytics.nn.ours import C3k2_PureLEGM
 from ultralytics.nn.extra_modules.CTrans import ChannelTransformer, GetIndexOutput
 from ultralytics.nn.modules import (
     AIFI,
@@ -1049,6 +1049,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             C2,
             C2f,
             C3k2,
+            C3k2_PureLEGM,
             RepNCSPELAN4,
             ELAN1,
             ADown,
@@ -1085,6 +1086,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 C2,
                 C2f,
                 C3k2,
+                C3k2_PureLEGM,
                 C2fAttn,
                 C3,
                 C3TR,

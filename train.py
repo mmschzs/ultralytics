@@ -9,13 +9,13 @@ from ultralytics import YOLO
 
 if __name__ == '__main__':
     # Load a model
-    # model = RTDETR("ultralytics/cfg/models/rt-detr/rtdetr-r18-ours.yaml")
-    model = YOLO("ultralytics/cfg/models/11/yolo11-ours.yaml")
+    model = RTDETR("ultralytics/cfg/models/rt-detr/rtdetr-ours.yaml")
+    # model = YOLO("ultralytics/cfg/models/11/yolo11-ours.yaml")
     model.train(data='ultralytics/cfg/datasets/coco8.yaml',
                 nwdloss= True,
                 #cache=True,#
                 imgsz=640,
-                epochs=300,
+                epochs=2,
                 batch=1,#调小，fix  可能会因为显存不足而报错,-1也可能会报错out of memory
                 workers=0,#fix 页面太小，可能会报错
                 device='0',
